@@ -212,7 +212,6 @@ FLUX/
 ├── data/
 │   └── fingerprints_merged.json  # 合并指纹库
 ├── README.md              # 使用手册
-└── 优化.txt               # 优化建议文档
 ```
 
 ## 核心类说明
