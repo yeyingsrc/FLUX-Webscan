@@ -95,8 +95,6 @@ pip install requests beautifulsoup4 colorlog pyyaml
 # 基础全功能扫描（自动跳过DNSLog盲测）
 python flux.py https://example.com --full -o report.html
 
-<img width="1725" height="936" alt="image" src="https://github.com/user-attachments/assets/4d2a6bc9-1b1c-4978-b6c3-7cdc56d20c4d" />
-
 # 全功能扫描 + DNSLog盲测（推荐用于SSRF检测）
 python flux.py https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 ```
@@ -135,8 +133,6 @@ python flux.py https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 | `--dnslog` | 指定DNSLog域名用于盲SSRF测试 | - |
 | `-v`, `--verbose` | 详细输出 | 关闭 |
 | `-q`, `--quiet` | 安静模式 | 关闭 |
-
-![Uploading image.png…]()
 
 ## 使用示例
 
@@ -183,8 +179,6 @@ python flux.py https://example.com --full -o report.html
 - **存储桶Policy泄露**: 测试是否可未授权获取存储桶策略配置
 - **存储桶CORS配置泄露**: 测试是否可未授权获取CORS配置
 - **未授权上传/删除**: 测试存储桶是否允许未授权上传或删除文件
-
-<img width="1698" height="336" alt="f4646cb0-7074-47ec-82a2-f946ffaab152" src="https://github.com/user-attachments/assets/47eac673-2861-4f34-9a9f-a4ae6dfbc839" />
 
 **支持的云服务商:**
 | 云服务商 | 存储桶服务 | Access Key检测 | 存储桶遍历 | 接管检测 |
@@ -307,6 +301,10 @@ API文档解析器：
 - 提高密钥识别准确性
 
 ## 更新日志
+
+### v3.0.3 (2026-03-04)
+- 🔧 修复`enhanced_tester`变量作用域问题（非GET请求方法报错）
+- 🔧 优化增强版测试器初始化逻辑（移到条件分支外）
 
 ### v3.0.2 (2026-03-03)
 - 🔧 修复扫描卡住问题（API文档搜索超时优化）
