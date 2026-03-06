@@ -4509,7 +4509,6 @@ class FLUX:
 </html>'''
 
 def parse_args():
-    
     parser = argparse.ArgumentParser(
         description='FLUX v3.0.5: 专业的Web安全扫描工具 (25,000+指纹库 | 40+WAF检测 | 差分测试 | SwaggerHound | 误报过滤)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -4548,6 +4547,16 @@ def parse_args():
 
   # 深度扫描 (爬取深度5)
   python flux.py https://example.com -d 5
+
+  # URL包含特殊字符(&或=) - Windows CMD必须用双引号
+  python flux.py "https://example.com/path?a=1&b=2" --full -o report.html
+
+  # URL包含特殊字符 - 其他系统可用单引号
+  python flux.py 'https://example.com/path?a=1&b=2' --full -o report.html
+
+  # 或使用文件方式加载URL
+  python flux.py urls.txt
+  python flux.py -l urls.txt
 
   # 漏洞主动测试 (带差分检测, 误报率降低80%+)
   python flux.py https://example.com --vuln-test
@@ -4614,6 +4623,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    
+    # 支持从环境变量读取URL（解决URL中特殊字符导致CMD解析问题）
+    import os
+    if os.environ.get('FLUX_TARGET'):
+        args.target = os.environ.get('FLUX_TARGET')
+        logger.info(f"[*] 从环境变量读取目标: {args.target}")
 
     # Banner显示逻辑
     try:
