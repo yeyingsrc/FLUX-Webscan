@@ -1466,17 +1466,8 @@ class EnhancedVulnTester:
         """SSTI检测 - 优化减少误报"""
         findings = []
         
-        # 如果没有提供参数，使用常见的SSTI测试参数名
         if not params:
-            params = {}
-        
-        # 添加常见的SSTI测试参数名
-        ssti_param_names = ['template', 'view', 'render', 'name', 'page', 'file', 
-                           'content', 'html', 'data', 'query', 'search', 'id',
-                           'action', 'module', 'component', 'layout', 'partial']
-        for param_name in ssti_param_names:
-            if param_name not in params:
-                params[param_name] = "test"
+            return findings
         
         # 排除静态资源文件
         static_extensions = ('.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', 
@@ -1559,29 +1550,23 @@ class EnhancedVulnTester:
                 logger.debug(f"SSTI test error: {e}")
         
         # 需要至少两个不同的payload都触发才能确认漏洞（减少误报）
-        if len(confirmed_vulns) >= 2:
-            # 验证两个payload的计算结果都不同且都正确
-            unique_results = set(v['expected'] for v in confirmed_vulns)
-            if len(unique_results) >= 2:
-                # 取第一个确认的结果
-                vuln = confirmed_vulns[0]
-                request_str = build_http_request(method, url, params=vuln['test_params'])
-                response_str = format_response(vuln['response'])
-                
-                findings.append(VulnResult(
-                    vuln_type="SSTI",
-                    severity="Critical",
-                    url=url,
-                    param=str(list(params.keys())),
-                    payload=vuln['payload'],
-                    detail=f"检测到SSTI漏洞 - 数学运算 {vuln['payload']} 被执行为 {vuln['expected']}",
-                    evidence=f"响应中包含计算结果: {vuln['expected']}",
-                    request=request_str,
-                    response=response_str
-                ))
-        elif len(confirmed_vulns) == 1:
-            # 只有一个payload匹配，可能是误报，记录为低置信度信息
-            logger.debug(f"SSTI检测：只有一个payload匹配，可能是误报，跳过报告")
+        if len(confirmed_vulns) >= 1:
+            # 取第一个确认的结果
+            vuln = confirmed_vulns[0]
+            request_str = build_http_request(method, url, params=vuln['test_params'])
+            response_str = format_response(vuln['response'])
+            
+            findings.append(VulnResult(
+                vuln_type="SSTI",
+                severity="Critical",
+                url=url,
+                param=str(list(params.keys())),
+                payload=vuln['payload'],
+                detail=f"检测到SSTI漏洞 - 数学运算 {vuln['payload']} 被执行为 {vuln['expected']}",
+                evidence=f"响应中包含计算结果: {vuln['expected']}",
+                request=request_str,
+                response=response_str
+            ))
                 
         return findings
     
@@ -2056,9 +2041,8 @@ class CloudSecurityTester:
         },
         "又拍云AccessKey": {
             "pattern": r'\b[a-zA-Z0-9]{32}\b',
-            "context": r'(upyun|upaiyun|b0\.upaiyun)',
-            "severity": "High",
-            "exclude_context": r'(md5|sha|hash|uuid|guid|password|token|session|cookie|key|id)'
+            "context": r'(upyun|operator|password)',
+            "severity": "High"
         },
         "Google Cloud": {
             "pattern": r'\bGOOG[\w\W]{10,30}\b',
@@ -2275,25 +2259,16 @@ class CloudSecurityTester:
             try:
                 pattern = key_info["pattern"]
                 context = key_info.get("context", "")
-                exclude_context = key_info.get("exclude_context", "")
                 severity = key_info.get("severity", "High")
                 
                 # 检查上下文
                 if context and not re.search(context, content_lower):
                     continue
                 
-                # 检查排除上下文（避免误报）
-                if exclude_context and re.search(exclude_context, content_lower):
-                    continue
-                
                 matches = re.findall(pattern, content)
                 for match in set(matches):
                     # 过滤常见误报
                     if self._is_false_positive(match):
-                        continue
-                    
-                    # 额外检查：AccessKey不应该出现在JS变量名或CSS类名中
-                    if self._is_js_variable_or_css_class(content, match):
                         continue
                     
                     findings.append(VulnResult(
@@ -2309,23 +2284,6 @@ class CloudSecurityTester:
                 logger.debug(f"Cloud key detection error: {e}")
         
         return findings
-    
-    def _is_js_variable_or_css_class(self, content: str, match: str) -> bool:
-        """检查匹配项是否是JS变量名或CSS类名"""
-        # 检查是否是JSON key
-        if f'"{match}"' in content or f"'{match}'" in content:
-            # 检查是否是常见的JSON key或变量名
-            json_patterns = [
-                rf'"[a-z_]*{match}[a-z_]*"\s*:',  # JSON key
-                rf'"[a-z_]+"\s*:\s*"{match}"',   # JSON string value
-                rf'\b[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*["\']?{match}',  # 变量赋值
-                rf'\bclass\s*=\s*["\'][^"\']*{match}[^"\']*["\']',  # CSS class
-                rf'\bid\s*=\s*["\']{match}["\']',  # HTML id
-            ]
-            for pattern in json_patterns:
-                if re.search(pattern, content):
-                    return True
-        return False
     
     def _detect_bucket_urls(self, content: str, source: str) -> List[VulnResult]:
         """检测存储桶URL泄露"""
