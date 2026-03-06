@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-   FLUX v3.0: 专业的Web安全扫描工具
+   FLUX v3.0.5: 专业的Web安全扫描工具
 =============================================================================
     核心特性:
     - 25,000+ 指纹库
@@ -12,10 +12,12 @@
     - 智能速率限制 / 流量指纹伪装
     - API参数提取与Fuzzing
     - JS代码混淆还原
+    - SwaggerHound API自动测试
+    - SQL注入/XSS误报过滤
 
     作者: ROOT4044
-    版本: 3.0.0
-    日期: 2026-03-03
+    版本: 3.0.5
+    日期: 2026-03-06
     许可证: MIT License
 =============================================================================
 """
@@ -48,6 +50,7 @@ from report_generator import generate_html_report_v3 as generate_html_report
 from vuln_test import EnhancedVulnTester, detect_webpack, get_api_type, get_risk_description
 from fingerprint_engine import FingerprintEngine, FingerprintResult
 from api_parser import APIDocParser, APIEndpoint, ParsedAPIDoc, parse_api_docs
+from swagger_hound import SwaggerHound
 
 
 logging.basicConfig(
@@ -128,7 +131,7 @@ class FLUX:
                  threads: int = 20, verify_keys: bool = False,
                  fuzz_params: bool = False, vuln_test: bool = False,
                  fuzz_paths: bool = False, test_delete: bool = False,
-                 api_parse: bool = False):
+                 api_parse: bool = False, verify_endpoints: bool = False):
         
         if os.path.isfile(target):
             with open(target, 'r') as f:
@@ -146,6 +149,7 @@ class FLUX:
         self.fuzz_paths = fuzz_paths
         self.test_delete = test_delete
         self.api_parse = api_parse
+        self.verify_endpoints = verify_endpoints
         
         # 线程锁保护共享资源
         self._lock = threading.Lock()
@@ -1051,6 +1055,7 @@ class FLUX:
             解析后的API文档列表
         """
         logger.info(f"{Colors.CYAN}[*] 开始搜索API文档...{Colors.END}")
+        logger.debug(f"[parse_api_documentation] api_parse={self.api_parse}")
         
         try:
             self.parsed_api_docs = self.api_doc_parser.discover_and_parse(base_url)
@@ -1088,7 +1093,65 @@ class FLUX:
         except Exception as e:
             logger.debug(f"API文档解析错误: {e}")
         
+        self._run_swagger_hound(base_url)
+        
         return self.parsed_api_docs
+    
+    def _run_swagger_hound(self, base_url: str):
+        """运行SwaggerHound进行API测试"""
+        logger.debug(f"[_run_swagger_hound] api_parse={self.api_parse}")
+        if not self.api_parse:
+            logger.info(f"{Colors.YELLOW}[-] SwaggerHound 未启用 (api_parse=False){Colors.END}")
+            return
+        
+        logger.info(f"{Colors.CYAN}[*] 启动 SwaggerHound API测试...{Colors.END}")
+        
+        try:
+            proxies = None
+            if self.proxy:
+                proxies = {'http': self.proxy, 'https': self.proxy}
+            
+            hound = SwaggerHound(self.session, proxies)
+            findings = hound.discover_and_scan(base_url)
+            
+            if findings:
+                logger.info(f"{Colors.GREEN}[+] SwaggerHound 发现 {len(findings)} 个可访问接口{Colors.END}")
+                
+                for finding in findings:
+                    url = finding.get('url', '')
+                    method = finding.get('method', 'GET')
+                    summary = finding.get('summary', '')
+                    status_code = finding.get('status_code', 0)
+                    response = finding.get('response', '')
+                    params = finding.get('params', {})
+                    
+                    endpoint_key = (url, method)
+                    if endpoint_key not in self.endpoint_urls:
+                        self.endpoint_urls.add(endpoint_key)
+                        self.endpoints.append(Endpoint(
+                            url=url,
+                            method=method,
+                            source_js=f"SwaggerHound测试",
+                            params=list(params.keys()) if params else [],
+                            api_type="swagger_test"
+                        ))
+                    
+                    finding_key = (url, 'SwaggerHound API测试', summary)
+                    if finding_key not in self.result_keys:
+                        self.result_keys.add(finding_key)
+                        self.results.append(ScanResult(
+                            url=url,
+                            type="API接口测试",
+                            severity="Info",
+                            finding=f"{method} {summary}" if summary else f"{method} {url}",
+                            detail=f"状态码: {status_code}\n响应: {response[:200]}..." if response else f"状态码: {status_code}",
+                            source="SwaggerHound"
+                        ))
+            else:
+                logger.info(f"{Colors.YELLOW}[-] SwaggerHound 未发现可访问的接口{Colors.END}")
+                
+        except Exception as e:
+            logger.debug(f"SwaggerHound 测试错误: {e}")
     
     def _get_baseline(self, url: str, params: Dict, method: str = "GET") -> Dict:
         """获取正常请求的基准线响应特征"""
@@ -1199,15 +1262,19 @@ class FLUX:
                     is_vuln, detail = self._is_significant_difference(resp, baseline, "SQL Injection")
                     
                     if is_vuln:
-                        findings.append(VulnFinding(
-                            url=url,
-                            vuln_type="SQL Injection",
-                            severity="Critical",
-                            param=param_name,
-                            payload=payload,
-                            detail=f"差分检测确认: {detail}"
-                        ))
-                        break
+                        # 额外验证：检查是否是真实的SQL注入（排除测试代码/示例）
+                        if self._verify_sqli_real(resp, payload):
+                            findings.append(VulnFinding(
+                                url=url,
+                                vuln_type="SQL Injection",
+                                severity="Critical",
+                                param=param_name,
+                                payload=payload,
+                                detail=f"差分检测确认: {detail}"
+                            ))
+                            break
+                        else:
+                            logger.debug(f"SQL注入可能是误报，跳过: {payload[:30]}...")
                         
                 except Exception as e:
                     logger.debug(f"SQLi test error: {e}")
@@ -1258,15 +1325,23 @@ class FLUX:
                         # 进一步检查：payload是否在script标签或事件处理器中
                         context = self._check_xss_context(resp_text, payload)
                         if context["vulnerable"]:
-                            findings.append(VulnFinding(
-                                url=url,
-                                vuln_type="XSS",
-                                severity="High",
-                                param=list(test_params.keys())[0],
-                                payload=payload,
-                                detail=f"反射型XSS - 上下文: {context['type']}"
-                            ))
-                            break
+                            # 额外验证：检查响应中是否包含大量测试payload（可能是测试代码本身）
+                            payload_count = resp_text.count(payload)
+                            if payload_count > 5:
+                                logger.debug(f"跳过可能的测试代码: {payload[:30]}... 出现{payload_count}次")
+                                continue
+                            
+                            # 验证：检查是否是真实的XSS（payload在正确的上下文中可执行）
+                            if self._verify_xss_executable(resp_text, payload):
+                                findings.append(VulnFinding(
+                                    url=url,
+                                    vuln_type="XSS",
+                                    severity="High",
+                                    param=list(test_params.keys())[0],
+                                    payload=payload,
+                                    detail=f"反射型XSS - 上下文: {context['type']}"
+                                ))
+                                break
                     
             except Exception as e:
                 logger.debug(f"XSS test error: {e}")
@@ -1301,6 +1376,120 @@ class FLUX:
             result = {"vulnerable": True, "type": "style_context"}
         
         return result
+    
+    def _verify_xss_executable(self, content: str, payload: str) -> bool:
+        """
+        验证XSS payload是否在可执行的上下文中
+        过滤掉被注释、字符串字面量或测试代码中的payload
+        """
+        idx = content.find(payload)
+        if idx == -1:
+            return False
+        
+        # 获取更广泛的上下文（前后200字符）
+        start = max(0, idx - 200)
+        end = min(len(content), idx + len(payload) + 200)
+        context = content[start:end]
+        
+        # 检查是否在HTML注释中
+        comment_pattern = r'<!--.*?-->'
+        for match in re.finditer(comment_pattern, context, re.DOTALL):
+            if match.start() <= (idx - start) <= match.end():
+                logger.debug(f"XSS payload在HTML注释中，跳过")
+                return False
+        
+        # 检查是否在JS字符串字面量中
+        js_string_pattern = r'["\']([^"\']*?' + re.escape(payload) + r'[^"\']*?)["\']'
+        if re.search(js_string_pattern, context):
+            # 进一步检查是否在可执行的上下文中
+            # 例如：var x = "<script>" 是不可执行的
+            # 但：eval("<script>") 是可执行的
+            if not re.search(r'eval\s*\(|Function\s*\(|setTimeout\s*\(|setInterval\s*\(', context):
+                logger.debug(f"XSS payload在JS字符串字面量中且无可执行上下文，跳过")
+                return False
+        
+        # 检查是否在CSS/Style注释中
+        if re.search(r'/\*.*?\*/', context, re.DOTALL):
+            css_comment = re.search(r'/\*.*?\*/', context, re.DOTALL)
+            if css_comment and css_comment.start() <= (idx - start) <= css_comment.end():
+                logger.debug(f"XSS payload在CSS注释中，跳过")
+                return False
+        
+        # 检查是否是测试/示例代码（包含test、example、sample等关键词）
+        test_keywords = ['test', 'example', 'sample', 'demo', 'mock', 'fixture', 'spec']
+        surrounding_text = content[max(0, idx-500):min(len(content), idx+len(payload)+500)].lower()
+        if any(kw in surrounding_text for kw in test_keywords):
+            # 进一步检查：如果payload出现在代码注释或文档中，可能是示例
+            if re.search(r'(//|#|<!--).*?' + re.escape(payload[:20]), surrounding_text, re.IGNORECASE):
+                logger.debug(f"XSS payload在测试/示例代码中，跳过")
+                return False
+        
+        return True
+    
+    def _verify_sqli_real(self, resp, payload: str) -> bool:
+        """
+        验证SQL注入是否真实存在（排除误报）
+        过滤测试代码、示例、文档中的SQL错误
+        """
+        resp_text = resp.text
+        resp_lower = resp_text.lower()
+        
+        # 1. 检查响应中是否包含大量payload（可能是测试代码）
+        payload_count = resp_text.count(payload)
+        if payload_count > 3:
+            logger.debug(f"SQL payload出现{payload_count}次，可能是测试代码")
+            return False
+        
+        # 2. 检查是否在代码注释中（HTML注释、JS注释等）
+        # HTML注释
+        html_comment_pattern = r'<!--.*?-->'
+        for match in re.finditer(html_comment_pattern, resp_text, re.DOTALL):
+            if payload in match.group(0):
+                logger.debug(f"SQL payload在HTML注释中，跳过")
+                return False
+        
+        # JS/CSS注释
+        js_comment_pattern = r'/\*.*?\*/'
+        for match in re.finditer(js_comment_pattern, resp_text, re.DOTALL):
+            if payload in match.group(0):
+                logger.debug(f"SQL payload在JS/CSS注释中，跳过")
+                return False
+        
+        # 单行注释
+        single_line_comments = re.findall(r'//.*$', resp_text, re.MULTILINE)
+        for comment in single_line_comments:
+            if payload in comment:
+                logger.debug(f"SQL payload在单行注释中，跳过")
+                return False
+        
+        # 3. 检查是否是测试/示例代码
+        test_keywords = ['test', 'example', 'sample', 'demo', 'mock', 'fixture', 'spec', 'tutorial']
+        surrounding_text = resp_lower[max(0, resp_lower.find(payload.lower())-1000):min(len(resp_lower), resp_lower.find(payload.lower())+len(payload)+1000)]
+        if any(kw in surrounding_text for kw in test_keywords):
+            logger.debug(f"SQL payload在测试/示例代码附近，谨慎处理")
+            # 进一步检查SQL错误是否出现在代码块中
+            code_block_pattern = r'<code>.*?</code>|<pre>.*?</pre>|```.*?```'
+            for match in re.finditer(code_block_pattern, resp_lower, re.DOTALL):
+                if any(err in match.group(0) for err in self.SQLI_ERRORS):
+                    logger.debug(f"SQL错误在代码块中，可能是示例")
+                    return False
+        
+        # 4. 检查SQL错误是否是文档的一部分（如API文档中的错误示例）
+        doc_keywords = ['documentation', 'api reference', 'error code', 'status code', 'response example']
+        if any(kw in resp_lower for kw in doc_keywords):
+            # 检查错误是否出现在示例/代码块中
+            if re.search(r'<(code|pre|samp)>.*?(sql|error|syntax)', resp_lower, re.DOTALL):
+                logger.debug(f"SQL错误在API文档示例中，跳过")
+                return False
+        
+        # 5. 检查是否是Swagger/OpenAPI文档
+        if 'swagger' in resp_lower or 'openapi' in resp_lower:
+            # Swagger文档经常包含SQL示例
+            if resp_lower.count('example') > 5 or resp_lower.count('schema') > 5:
+                logger.debug(f"可能是Swagger/OpenAPI文档，跳过SQL注入检测")
+                return False
+        
+        return True
     
     def test_lfi(self, url: str, params: Dict, method: str = "GET") -> List[VulnFinding]:
         """LFI测试 - 带WAF绕过"""
@@ -2553,9 +2742,45 @@ class FLUX:
                 logger.debug(f"Pattern error: {e}")
         
         return endpoints
-        # endpoints = self._filter_static_endpoints(endpoints)
-        # endpoints = self._filter_page_routes(endpoints)
-        # return endpoints
+    
+    def _verify_endpoint_exists(self, endpoint, source_url: str) -> bool:
+        """
+        验证端点是否真实存在
+        通过发送HEAD请求检查端点是否返回有效响应
+        """
+        try:
+            # 构建完整URL
+            if endpoint.url.startswith('http'):
+                test_url = endpoint.url
+            else:
+                parsed = urlparse(source_url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                test_url = base_url + endpoint.url
+            
+            # 发送HEAD请求验证
+            resp = self.session.head(test_url, timeout=5, allow_redirects=True)
+            
+            # 如果HEAD请求成功（2xx或3xx），认为端点存在
+            if resp.status_code < 400:
+                return True
+            
+            # 如果HEAD返回405（Method Not Allowed），尝试GET请求
+            if resp.status_code == 405:
+                resp = self.session.get(test_url, timeout=5, allow_redirects=True)
+                if resp.status_code < 400:
+                    return True
+            
+            # 检查是否是常见的"页面不存在"响应
+            if resp.status_code in [404, 410]:
+                return False
+            
+            # 其他情况（如401, 403等）可能表示端点存在但受保护
+            return True
+            
+        except Exception as e:
+            logger.debug(f"验证端点失败 {endpoint.url}: {e}")
+            # 验证失败时，默认保留端点（保守策略）
+            return True
     
     def _resolve_relative_path(self, relative_path: str, base_url: str) -> str:
         """
@@ -3533,6 +3758,7 @@ class FLUX:
                 # 只在首页进行指纹识别和API文档解析
                 if first_page:
                     first_page = False
+                    logger.info(f"{Colors.CYAN}[*] 开始首页分析 (api_parse={self.api_parse}){Colors.END}")
                     
                     # 获取响应头和cookies用于指纹识别
                     try:
@@ -3544,9 +3770,12 @@ class FLUX:
                         self.fingerprint_target(url, headers, html_content, cookies)
                         
                         # API文档解析
+                        logger.info(f"{Colors.CYAN}[*] 调用 parse_api_documentation{Colors.END}")
                         self.parse_api_documentation(target_url)
                     except Exception as e:
-                        logger.debug(f"指纹识别/API解析错误: {e}")
+                        logger.info(f"{Colors.RED}[!] 指纹识别/API解析错误: {e}{Colors.END}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
                 
                 jsonp_findings = self.detect_jsonp(html_content, url)
                 if jsonp_findings:
@@ -3598,6 +3827,12 @@ class FLUX:
             for ep in endpoints:
                 ep_key = (ep.url, ep.method)
                 if ep_key not in self.endpoint_urls:
+                    # 验证端点是否真实存在（可选，通过参数控制）
+                    if getattr(self, 'verify_endpoints', False):
+                        if not self._verify_endpoint_exists(ep, url):
+                            logger.debug(f"跳过不存在的端点: {ep.url}")
+                            continue
+                    
                     self.endpoint_urls.add(ep_key)
                     is_delete = any(x in ep.url.lower() for x in ['delete', 'remove', 'del_', 'drop'])
                     ep.is_delete = is_delete
@@ -4267,15 +4502,16 @@ class FLUX:
         </div>
         
         <div class="footer">
-            <p><i class="bi bi-code-slash"></i> Generated by FLUX v3.0</p>
+            <p><i class="bi bi-code-slash"></i> Generated by FLUX v3.0.5</p>
         </div>
     </div>
 </body>
 </html>'''
 
 def parse_args():
+    
     parser = argparse.ArgumentParser(
-        description='FLUX v3.0: 专业的Web安全扫描工具 (25,000+指纹库 | 40+WAF检测 | 差分测试)',
+        description='FLUX v3.0.5: 专业的Web安全扫描工具 (25,000+指纹库 | 40+WAF检测 | 差分测试 | SwaggerHound | 误报过滤)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=r"""
 ===================================================================
@@ -4288,10 +4524,11 @@ def parse_args():
   一键扫描将自动启用:
   [OK] 指纹识别 (25,000+规则, 多特征验证)
   [OK] API文档解析 (Swagger/OpenAPI/Postman)
+  [OK] SwaggerHound API自动测试
   [OK] 密钥有效性验证
   [OK] 敏感路径Fuzzing
   [OK] 参数Fuzzing (从JS提取API参数)
-  [OK] 漏洞主动测试 (SQLi/XSS/LFI/RCE/SSTI/SSRF, 带差分检测)
+  [OK] 漏洞主动测试 (SQLi/XSS/LFI/RCE/SSTI/SSRF, 带差分检测和误报过滤)
   [OK] WAF检测与绕过 (40+种WAF含国产厂商)
   [OK] 智能速率限制 (自适应请求频率)
   [OK] 流量指纹伪装 (Header轮换)
@@ -4368,6 +4605,7 @@ def parse_args():
     parser.add_argument('--test-delete', action='store_true', help='测试DELETE类危险接口')
     parser.add_argument('--dnslog', type=str, help='指定DNSLog域名用于盲SSRF测试 (例如: xxx.dnslog.cn)')
     parser.add_argument('--api-parse', action='store_true', help='启用API文档解析 (Swagger/OpenAPI)')
+    parser.add_argument('--verify-endpoints', action='store_true', help='验证提取的端点是否真实存在（减少误报）')
     parser.add_argument('-v', '--verbose', action='store_true', help='详细输出')
     parser.add_argument('-q', '--quiet', action='store_true', help='安静模式')
     
@@ -4391,7 +4629,7 @@ def main():
   ██║     ███████╗╚██████╔╝██╔╝ ██╗
   ╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝
 
-         专业的Web安全扫描工具 FLUX v3.0
+         专业的Web安全扫描工具 FLUX v3.0.5
               Author: ROOT4044
 
 ================================================================
@@ -4407,7 +4645,7 @@ def main():
   \033[93m██║     ███████╗╚██████╔╝██╔╝ ██╗\033[96m
   \033[93m╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝\033[96m
 
-         专业的Web安全扫描工具 \033[93mFLUX v3.0\033[96m
+         专业的Web安全扫描工具 \033[93mFLUX v3.0.5\033[96m
               Author: ROOT4044
 
 ================================================================\033[0m
@@ -4423,7 +4661,7 @@ def main():
   ██║     ███████╗╚██████╔╝██╔╝ ██╗
   ╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝
 
-         专业的Web安全扫描工具 FLUX v3.0
+         专业的Web安全扫描工具 FLUX v3.0.5
               Author: ROOT4044
 
 ================================================================
@@ -4505,7 +4743,8 @@ def main():
         vuln_test=args.vuln_test,
         fuzz_paths=args.fuzz_paths,
         test_delete=args.test_delete,
-        api_parse=args.api_parse
+        api_parse=args.api_parse,
+        verify_endpoints=args.verify_endpoints
     )
     
     try:
