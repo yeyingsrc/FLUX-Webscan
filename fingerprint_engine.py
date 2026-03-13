@@ -426,10 +426,11 @@ class FingerprintEngine:
                     total_score += feature_score
                     matched_features.extend(matched_keywords)
             
-            # 严格验证条件：
+            # 验证条件（降低门槛以识别更多系统）：
             # 1. faviconhash匹配（单独即可）
             # 2. 至少2个不同method的特征匹配
-            # 3. 或 1个高置信度特征 + title/body组合
+            # 3. 或 1个高置信度特征（>=0.70）
+            # 4. 或 1个body特征且关键词较特定（>=15字符）
             final_score = 0.0
             is_valid = False
             
@@ -441,15 +442,25 @@ class FingerprintEngine:
                 # 至少2个不同method的特征
                 final_score = min(total_score * 0.85, 0.92)
                 is_valid = True
-            elif len(matched_methods) == 1 and total_score >= 0.85:
-                # 单个特征但置信度极高（如非常特定的header）
-                # 需要额外验证：检查系统名是否在页面内容中
-                if self._verify_system_in_content(system_name, content_lower, title_lower):
-                    final_score = total_score * 0.90
-                    is_valid = True
+            elif len(matched_methods) == 1 and total_score >= 0.70:
+                # 单个特征但置信度较高即可
+                final_score = total_score * 0.90
+                is_valid = True
+            elif matched_methods and matched_features:
+                # 有任何匹配特征都尝试识别（最低门槛）
+                # 根据特征数量和质量计算分数
+                base_score = 0.50
+                if 'header' in matched_methods:
+                    base_score += 0.15
+                if 'body' in matched_methods:
+                    base_score += 0.10
+                if 'title' in matched_methods:
+                    base_score += 0.10
+                final_score = min(base_score + len(matched_features) * 0.05, 0.75)
+                is_valid = final_score >= 0.55
             
-            # 只有验证通过才添加到结果
-            if is_valid and final_score >= 0.75:
+            # 只有验证通过才添加到结果（降低门槛到55%）
+            if is_valid and final_score >= 0.55:
                 results.append(FingerprintResult(
                     name=system_name,
                     category=rules[0].category if rules else "Other",
@@ -541,7 +552,7 @@ class FingerprintEngine:
         return False
     
     def _get_favicon_hash(self, url: str) -> Optional[str]:
-        """获取favicon的hash值"""
+        """获取favicon的hash值 (支持MMH3和MD5备选)"""
         try:
             from urllib.parse import urlparse
             parsed = urlparse(url)
@@ -549,12 +560,17 @@ class FingerprintEngine:
             
             response = self.session.get(favicon_url, timeout=5, verify=False)
             if response.status_code == 200 and response.content:
-                # 计算MMH3 hash
-                import mmh3
                 favicon = response.content
                 if favicon:
-                    hash_val = mmh3.hash(favicon)
-                    return str(hash_val)
+                    # 优先使用MMH3 hash
+                    try:
+                        import mmh3
+                        hash_val = mmh3.hash(favicon)
+                        return str(hash_val)
+                    except ImportError:
+                        # 备选：使用MD5 hash
+                        hash_val = hashlib.md5(favicon).hexdigest()
+                        return hash_val
         except:
             pass
         return None
