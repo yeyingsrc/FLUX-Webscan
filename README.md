@@ -1,10 +1,10 @@
 FLUX 是一款专业的Web安全扫描工具，支持JS敏感信息收集、API端点提取、API文档解析、页面爬取、子域名发现、漏洞测试、WAF检测与绕过、JS代码分析等功能。觉得好用点个星星谢谢
 
-# FLUX v3.1.0 使用手册
+# FLUX v3.2.1 使用手册
 
 ## 简介
 
-FLUX v3.1.0 是一款专业的Web安全扫描工具，在 v3.0.5 基础上新增扫描进度显示、过程中自动保存结果、优化参数体系等功能。
+FLUX v3.2.1 是一款专业的Web安全扫描工具，在 v3.2.0 基础上修复了多个关键问题，包括端点URL处理、漏洞测试覆盖、WAF绕过等功能。
 
 **核心特性:**
 - 🔍 25,000+ 指纹库
@@ -14,12 +14,9 @@ FLUX v3.1.0 是一款专业的Web安全扫描工具，在 v3.0.5 基础上新增
 - 💾 过程中自动保存结果（防止意外丢失）
 - 🤖 智能速率限制与流量伪装
 - 🔐 CSRF Token自动提取与Cookie持久化
+- 📥 扫描结果导入（支持 fscan/dddd + Web存活验证）
 
-**更新日志 (v3.1.0):**
-1. ✅ 扫描过程中自动保存结果（`--save-interval` 参数）
-2. ✅ 实时扫描进度显示（目标/页面/JS/发现/漏洞/耗时）
-3. ✅ 优化参数体系（`-t` 单目标，`-tf` 目标文件，`-tc` 线程数）
-4. ✅ 支持单功能扫描（`--fingerprint` 仅指纹识别等）
+
 
 **作者:** ROOT4044
 
@@ -41,7 +38,6 @@ FLUX v3.1.0 是一款专业的Web安全扫描工具，在 v3.0.5 基础上新增
   - 高置信度单一特征：favicon hash等强特征
   - 通用关键词过滤：避免"login"、"admin"等通用词汇误报
 <img width="2562" height="1323" alt="image" src="https://github.com/MY0723/FLUX-Webscan/blob/main/Assets/1.png" />
-
 ### 🛡️ 漏洞测试（差分检测）
 - **SQL Injection**: SQL注入检测（带基准线差分测试）
 - **XSS**: 跨站脚本检测（反射型、DOM型）
@@ -56,12 +52,12 @@ FLUX v3.1.0 是一款专业的Web安全扫描工具，在 v3.0.5 基础上新增
   - **存储桶接管**: 检测可接管的废弃存储桶
   - **ACL/Policy泄露**: 测试访问控制列表和策略配置泄露
   - **未授权操作**: 测试未授权上传、删除文件
-<img width="2562" height="1323" alt="image" src="https://github.com/MY0723/FLUX-Webscan/blob/main/Assets/2.png" />
+![alt text](image.png)
 **差分测试机制:**
 - 发送正常请求获取基准响应（状态码、长度、内容hash）
 - 发送Payload后对比差异
 - 显著差异才判定为漏洞，误报率降低80%+
-
+<img width="2562" height="1323" alt="image" src="https://github.com/MY0723/FLUX-Webscan/blob/main/Assets/2.png" />
 ### 🔥 WAF检测与绕过
 - **WAF识别**: 自动识别40+种WAF（国际16种 + 国产24种）
   - 国产支持：阿里云盾、腾讯云WAF、华为云WAF、安全狗、360网站卫士、知道创宇、安恒、长亭等
@@ -101,10 +97,10 @@ pip install -r requirements.txt
 ### 一键全功能扫描（推荐）
 ```bash
 # 基础全功能扫描（自动跳过DNSLog盲测）
-python flux.py https://example.com --full -o report.html
+python flux.py -t https://example.com --full -o report.html
 
 # 全功能扫描 + DNSLog盲测（推荐用于SSRF检测）
-python flux.py https://example.com --full --dnslog xxx.dnslog.cn -o report.html
+python flux.py -t https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 ```
 <img width="2562" height="1323" alt="image" src="https://github.com/user-attachments/assets/2ac8086d-f8cb-4ba0-8cf1-e6edfcf808b1" />
 
@@ -118,7 +114,7 @@ python flux.py https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 - ✅ WAF检测与绕过
 
 **注意:** 
-- `--full` 不包含DELETE测试，如需测试DELETE接口请额外添加 `--test-delete` 参数
+- `--full` 不包含危险操作测试（PUT/DELETE/上传），如需进行此类测试需单独开发
 - `--full` 模式下如未指定 `--dnslog`，将自动跳过盲SSRF测试（避免交互式输入卡住）
 
 ## 命令行参数
@@ -130,7 +126,6 @@ python flux.py https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 | `-t`, `--target` | 单个目标URL | - |
 | `-tf`, `--target-file` | 从文件加载目标列表(每行一个URL) | - |
 | `-d`, `--depth` | 爬取深度 | 3 |
-| `-tc`, `--threads` | 并发线程数 | 20 |
 | `--timeout` | 超时时间(秒) | 15 |
 | `--proxy` | 代理服务器 | - |
 | `-o`, `--output` | 输出文件(.html/.json) | - |
@@ -143,23 +138,26 @@ python flux.py https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 |-----|------|
 | `--full` | **一键全功能扫描** (启用所有检测) |
 | `--fingerprint` | **仅进行指纹识别** |
-| `--api-only` | **仅解析API文档** |
 
 ### 功能开关参数
 
-| 参数 | 说明 |
-|-----|------|
-| `--api-parse` | 启用API文档解析 |
-| `--verify-keys` | 验证密钥有效性 |
-| `--fuzz` | 启用参数fuzzing |
-| `--fuzz-paths` | 启用敏感路径fuzzing |
-| `--vuln-test` | 启用漏洞主动测试 |
-| `--test-delete` | 测试DELETE类危险接口 |
-| `--dnslog` | 指定DNSLog域名用于盲SSRF测试 |
+| 参数 | 说明 | 默认值 |
+|-----|------|-------|
+| `--api-parse` | 启用API文档解析 | - |
+| `--fuzz-paths` | 启用敏感路径fuzzing | - |
+| `--vuln-test` | 启用漏洞主动测试 | - |
+| `--test-api-endpoints` | 对所有发现的API端点进行漏洞测试 | - |
+| `--dnslog` | 指定DNSLog域名用于盲SSRF测试 | - |
 | `--save-interval` | 自动保存间隔(秒)，0为禁用 | 30 |
-| `--cookie-jar` | Cookie持久化文件路径 | - |
+| `--from-fscan` | 从 fscan 扫描结果导入目标 | - |
+| `--from-dddd` | 从 dddd 扫描结果导入目标 | - |
+| `--from-scan` | 从扫描结果导入目标(自动识别格式) | - |
+| `--no-verify-web` | 跳过Web服务存活验证 | - |
+| `--verify-threads` | Web存活验证并发线程数 | 10 |
 
-> ⚠️ **注意**: `--full`、 `--fingerprint`、 `--api-only` 为互斥参数，只能同时使用其中一个
+> 💡 **提示**: 默认情况下，漏洞测试只针对**HTML页面**和**表单**。如需测试所有发现的API端点（包括页面爬取和JS提取的），请添加 `--test-api-endpoints` 参数。`--full` 模式下会自动启用此功能
+
+> ⚠️ **注意**: `--full` 和 `--fingerprint` 为互斥参数，只能同时使用其中一个
 
 ## 使用示例
 
@@ -172,8 +170,8 @@ python flux.py -t https://example.com --full -o report.html
 # 全功能扫描 + DNSLog盲测（推荐用于SSRF检测）
 python flux.py -t https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 
-# 完整扫描（深度3，20线程，30秒自动保存）
-python flux.py -t https://example.com --full --dnslog xxx.dnslog.cn -d 3 -tc 20 -o report.html --save-interval 30
+# 完整扫描（深度3，30秒自动保存）
+python flux.py -t https://example.com --full --dnslog xxx.dnslog.cn -d 3 -o report.html --save-interval 30
 ```
 
 ### 单目标扫描
@@ -203,16 +201,13 @@ python flux.py -t https://example.com -d 5
 python flux.py -t https://example.com --fingerprint
 
 # 仅API文档解析
-python flux.py -t https://example.com --api-only
+python flux.py -t https://example.com --api-parse
 
 # 仅漏洞测试
 python flux.py -t https://example.com --vuln-test --dnslog xxx.dnslog.cn
 
 # 仅敏感路径扫描
 python flux.py -t https://example.com --fuzz-paths
-
-# 仅密钥验证
-python flux.py -t https://example.com --verify-keys
 ```
 
 ### 过程中自动保存结果
@@ -242,12 +237,16 @@ python flux.py -t https://example.com --full -o report.html
 **云安全测试内容:**
 - **云Access Key泄露检测**: 检测阿里云、腾讯云、华为云、AWS等云服务商的Access Key/Secret Key
 - **存储桶URL泄露**: 识别JS代码、页面内容中的存储桶域名
-- **存储桶遍历漏洞**: 测试存储桶是否允许未授权列出文件
+- **存储桶遍历漏洞**: 测试存储桶是否允许未授权列出文件（只测试疑似存储桶URL）
 - **存储桶接管漏洞**: 检测已删除/未注册的存储桶是否可被接管
 - **存储桶ACL泄露**: 测试是否可未授权获取存储桶访问控制列表
 - **存储桶Policy泄露**: 测试是否可未授权获取存储桶策略配置
 - **存储桶CORS配置泄露**: 测试是否可未授权获取CORS配置
-- **未授权上传/删除**: 测试存储桶是否允许未授权上传或删除文件
+- **未授权上传/删除**: 测试存储桶是否允许未授权上传或删除文件（危险操作，需显式开启）
+
+**优化说明:**
+- 云安全测试已优化，只对疑似存储桶URL进行测试（包含oss/cos/s3等特征），避免对普通页面发起大量请求导致卡顿
+- 测试超时时间缩短至5秒，提升扫描速度
 
 **支持的云服务商:**
 | 云服务商 | 存储桶服务 | Access Key检测 | 存储桶遍历 | 接管检测 |
@@ -278,7 +277,7 @@ python flux.py -t https://example.com -o report.html
 python flux.py -t https://example.com --vuln-test -o report.html
 ```
 
-### 全面扫描 (深度)除delete测试除外，如需要单独加参数--test-delete
+### 全面扫描 (深度)
 ```bash
 python flux.py -t https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 ```
@@ -300,6 +299,38 @@ python flux.py -t https://example.com --vuln-test
 # 方式3: 一键全功能扫描 + DNSLog
 python flux.py -t https://example.com --full --dnslog xxx.dnslog.cn -o report.html
 ```
+
+### 扫描结果导入 (fscan/dddd)
+
+支持从 fscan、dddd 等常见内网扫描工具的结果中导入目标，自动进行 Web 存活验证后开始扫描。
+
+```bash
+# 从 fscan 结果导入 (自动验证Web服务)
+python flux.py --from-fscan fscan_result.txt --full -o report.html
+
+# 从 dddd 结果导入
+python flux.py --from-dddd dddd_result.txt --full -o report.html
+
+# 自动识别扫描工具格式
+python flux.py --from-scan scan_result.txt --full -o report.html
+
+# 跳过Web存活验证，直接扫描所有目标
+python flux.py --from-fscan fscan_result.txt --no-verify-web --full -o report.html
+
+# 调整Web验证并发线程数 (默认10)
+python flux.py --from-fscan fscan_result.txt --verify-threads 20 --full -o report.html
+```
+
+**支持格式:**
+
+- **fscan**: `192.168.1.1:80 open` 格式
+- **dddd**: `[+] http://192.168.1.1:80` 格式
+
+**工作流程:**
+1. 解析扫描结果文件，提取 IP:Port
+2. 并发验证每个目标的 Web 服务存活状态
+3. 只对有 Web 服务响应的目标进行扫描
+4. 自动识别 HTTP/HTTPS 协议
 
 **获取DNSLog域名:**
 1. 访问 https://dnslog.cn
@@ -402,15 +433,35 @@ API文档解析器：
 - 提高密钥识别准确性
 
 ## 更新日志
+
+### v3.2.1 (2026-03-14)
+- 🔧 **修复端点URL相对路径问题**：漏洞测试前强制拼接目标域名，确保能测试到真实接口
+- 🔧 **修复`--full`模式覆盖不全**：添加CSRF、水平越权、SSRF测试到主流程
+- 🔧 **修复WAF绕过/限速/Header轮换未使用**：迁移到EnhancedVulnTester路径
+- 🔧 **修复多目标扫描上下文串扰**：每目标重置forms/endpoints/crawled_pages等集合
+- 🔧 **修复API解析依赖首页HTML**：`--api-parse`开启时直接执行，不依赖首页成功
+- 🔧 **修复过程保存缺口**：强制保存与定时保存分离，`save_interval=0`不影响异常保存
+- 🔧 **修复`--verify-endpoints`未覆盖JS端点**：JS端点添加时同步验证
+- 🔧 **清理文档和CLI示例**：移除旧的位置参数写法，修复`-t`参数冲突示例
+- 🔧 **标记未调用代码**：添加TODO/DEPRECATED注释，避免后续误导
+- 🔧 **开启云安全测试危险操作**：PUT/DELETE/上传测试默认启用（针对存储桶URL）
+
+### v3.2.0 (2026-03-13)
+- ✨ **新增扫描结果导入**：支持 fscan/dddd 扫描结果导入，自动进行 Web 存活验证
+- ✨ **新增参数Fuzzing功能**：`--full` 模式下自动启用，基于差分测试从JS提取API参数
+- ✨ **优化云安全测试**：只对疑似存储桶URL进行测试，避免卡顿
+- ✨ **优化漏洞测试范围**：默认只测试HTML页面和表单，新增 `--test-api-endpoints` 参数
+- 🔧 修复指纹识别Header匹配逻辑、faviconhash冲突、代理模式错误
+- 🔧 修复标题提取逻辑（支持非200状态码）
+- 🔧 优化HTTP请求头，降低503错误率
+
 ### v3.1.0 (2026-03-13)
 - ✨ **新增扫描进度实时显示**：目标/页面/JS/发现/漏洞/耗时统计
 - ✨ **新增过程中自动保存结果**：`--save-interval` 参数，防止程序异常丢失扫描进展
-- ✨ **优化参数体系**：`-t` 指定单目标，`-tf` 指定目标文件，`-tc` 指定线程数
-- ✨ **新增单功能扫描模式**：`--fingerprint` 仅指纹识别，`--api-only` 仅API解析
+- ✨ **优化参数体系**：`-t` 指定单目标，`-tf` 指定目标文件
+- ✨ **新增单功能扫描模式**：`--fingerprint` 仅指纹识别，`--api-parse` 仅API解析
 - ✨ **优化临时文件管理**：使用固定文件名，避免生成大量JSON文件
-- 🔧 修复指纹识别对IP目标的支持
-- 🔧 修复标题提取逻辑（支持非200状态码）
-- 🔧 优化HTTP请求头，降低503错误率
+- ✨ **危险操作默认关闭**：PUT/DELETE/上传类测试默认关闭，提升安全性
 
 ### v3.0.5 (2026-03-06)
 - ✨ 新增 `--verify-endpoints` 参数，验证提取的 API 端点是否真实存在（减少误报）
@@ -464,7 +515,7 @@ API文档解析器：
 
 ### Q: 扫描卡住不动？
 **A:** 已修复。如果仍遇到问题，请尝试：
-- 减少线程数：`-t 10`
+- 减少线程数：`--threads 10`
 - 减少爬取深度：`-d 2`
 - 检查目标网站是否可访问
 
